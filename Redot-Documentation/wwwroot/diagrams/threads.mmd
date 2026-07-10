@@ -1,0 +1,419 @@
+sequenceDiagram  
+    participant Main as "Main Thread (main/main.cpp)"  
+    participant WTP as "WorkerThreadPool (worker_thread_pool.cpp)"  
+    participant RT as "Render Thread (rendering_server_default.cpp)"  
+    participant AT as "Audio Thread (audio_driver_wasapi/alsa/etc)"  
+    participant P3D as "Physics 3D Thread (physics_server_3d_wrap_mt.cpp)"  
+    participant P2D as "Physics 2D Thread (physics_server_2d_wrap_mt.cpp)"  
+    participant WW as "WTP Worker Threads (navmesh / sub-thread nodes / resource loads)"  
+    participant WayEvt as "Wayland Event Thread (wayland_thread.cpp - Linux/Wayland only)"  
+    participant X11Evt as "X11 Event Thread (display_server_x11.cpp - Linux/X11 only)"  
+    participant DbgTCP as "Debugger TCP Thread (remote_debugger_peer.cpp - remote debug only)"  
+    participant IPRes as "IP DNS Resolver Thread (core/io/ip.cpp - always present)"  
+    participant DBusMon as "DBus Portal Monitor Thread (freedesktop_portal_desktop.cpp - Linux/DBus)"  
+    participant AtSPI as "AT-SPI Monitor Thread (freedesktop_at_spi_monitor.cpp - Linux/DBus)"  
+    participant MIDI as "ALSA MIDI Thread (midi_driver_alsamidi.cpp - Linux/MIDI)"  
+    participant WinFD as "Windows File Dialog Thread (display_server_windows.cpp - Windows per-dialog)"  
+    participant CamMon as "Camera Device Monitor Thread (camera_linux.cpp - Linux/camera module)"  
+    participant CamFeed as "Camera Feed Capture Thread (camera_feed_linux.cpp - Linux per-camera)"  
+    participant AudioRec as "Audio Record I/O Thread (audio_effect_record.cpp - when recording)"  
+    participant HTTP as "HTTPRequest Thread (http_request.cpp - per request when use_threads=true)"  
+    participant NoiseTex as "NoiseTexture Gen Thread (noise_texture_2d/3d.cpp - per texture update)"  
+  
+    Note over Main,NoiseTex: STARTUP  
+  
+    rect rgb(173, 216, 230)  
+        Main->>WTP: WorkerThreadPool::init() - spawn N threads from CPU count  
+        WTP-->>WW: N threads start running _thread_function() - waiting for tasks  
+    end  
+  
+    rect rgb(144, 238, 144)  
+        Note over Main,RT: Render Thread init (only when separate_thread_render=true)  
+        Main->>WTP: add_task(_thread_loop pump_task=true) - rendering_server_default.cpp:262  
+        WTP-->>RT: RT starts - calls yield() waiting for commands  
+        Main->>RT: push_and_sync(_init) via CommandQueueMT - rendering_server_default.cpp:265  
+        Note over Main: Main BLOCKS on sync_cond_var.wait()  
+        RT->>RT: flush_all() executes _init() - creates RSG canvas/viewport/scene/rasterizer  
+        RT-->>Main: sync_cond_var.notify_all() - unblocks Main  
+    end  
+  
+    rect rgb(200, 150, 255)  
+        Note over Main,P3D: Physics 3D Thread init (optional)  
+        Main->>WTP: add_task(_thread_loop pump_task=true) - physics_server_3d_wrap_mt.cpp:97  
+        WTP-->>P3D: P3D starts - calls yield() waiting for commands  
+        Main->>P3D: push_and_sync(PhysicsServer3D::init) - physics_server_3d_wrap_mt.cpp:100  
+        Note over Main: Main BLOCKS on sync_cond_var.wait()  
+        P3D->>P3D: flush_all() executes PhysicsServer3D::init()  
+        P3D-->>Main: sync_cond_var.notify_all() - unblocks Main  
+    end  
+  
+    rect rgb(255, 182, 193)  
+        Note over Main,P2D: Physics 2D Thread init (optional)  
+        Main->>WTP: add_task(_thread_loop pump_task=true) - physics_server_2d_wrap_mt.cpp:97  
+        WTP-->>P2D: P2D starts - calls yield() waiting for commands  
+        Main->>P2D: push_and_sync(PhysicsServer2D::init) - physics_server_2d_wrap_mt.cpp:100  
+        Note over Main: Main BLOCKS on sync_cond_var.wait()  
+        P2D->>P2D: flush_all() executes PhysicsServer2D::init()  
+        P2D-->>Main: sync_cond_var.notify_all() - unblocks Main  
+    end  
+  
+    rect rgb(255, 200, 100)  
+        Main->>AT: AudioDriverManager::initialize() - thread.start(thread_func)  
+        Note over AT: Audio thread starts running at hardware mix rate - fully independent  
+    end  
+  
+    rect rgb(255, 235, 150)  
+        Note over Main,WayEvt: Wayland only - WaylandThread::init() - wayland_thread.cpp:4341  
+        Main->>WayEvt: events_thread.start(_poll_events_thread)  
+        Note over WayEvt: Wayland event thread starts - blocks on poll() against wl_display fd  
+    end  
+  
+    rect rgb(220, 200, 255)  
+        Note over Main,X11Evt: X11 only - DisplayServerX11 constructor - display_server_x11.cpp:7379  
+        Main->>X11Evt: events_thread.start(_poll_events_thread)  
+        Note over X11Evt: X11 event thread starts - loops with 1ms select() timeout  
+    end  
+  
+    rect rgb(200, 230, 200)  
+        Note over Main,DbgTCP: Remote debug only - RemoteDebuggerPeerTCP::connect_to_host()  
+        Main->>DbgTCP: thread.start(_thread_func) - remote_debugger_peer.cpp:199  
+        Note over DbgTCP: Debugger TCP thread starts - polls socket at ~144Hz  
+    end  
+  
+    rect rgb(255, 210, 170)  
+        Main->>IPRes: IP::IP() constructor - resolver->thread.start(_thread_function) - ip.cpp:352  
+        Note over IPRes: IP resolver thread starts - blocks on Semaphore waiting for resolve requests  
+    end  
+  
+    rect rgb(180, 230, 180)  
+        Note over Main,DBusMon: Linux/DBus only - FreeDesktopPortalDesktop constructor  
+        Main->>DBusMon: monitor_thread.start(_thread_monitor) - freedesktop_portal_desktop.cpp:988  
+        Note over DBusMon: DBus portal monitor starts - polls DBus at 50ms intervals  
+    end  
+  
+    rect rgb(230, 180, 230)  
+        Note over Main,AtSPI: Linux/DBus only - FreeDesktopAtSPIMonitor constructor  
+        Main->>AtSPI: thread.start(monitor_thread_func) - freedesktop_at_spi_monitor.cpp:169  
+        Note over AtSPI: AT-SPI monitor starts - polls DBus at 50ms intervals for screen reader status  
+    end  
+  
+    rect rgb(180, 210, 255)  
+        Note over Main,MIDI: Linux/MIDI - MIDIDriverALSAMidi::open() during audio init  
+        Main->>MIDI: thread.start(thread_func) - midi_driver_alsamidi.cpp:~100  
+        Note over MIDI: ALSA MIDI thread starts - polls rawmidi inputs at 1ms intervals  
+    end  
+  
+    Note over Main: Linux/speechd only - TTS_Linux constructor - tts_linux.cpp:284  
+    Note over Main: init_thread.start(speech_init_thread_func) - one-shot thread initializes Speech Dispatcher then exits  
+  
+    Note over Main,NoiseTex: CONCURRENT BACKGROUND LOOPS (all run independently)  
+  
+    par Audio Thread - hardware-driven loop (audio_driver_wasapi.cpp / audio_driver_alsa.cpp)  
+        loop until exit_thread  
+            AT->>AT: lock() - acquire AudioDriver BinaryMutex  
+            AT->>AT: audio_server_process() calls AudioServer::_driver_process()  
+            AT->>AT: unlock() - release mutex  
+            AT->>AT: wait for hardware buffer event (OS-level block)  
+        end  
+    and Render Thread - pump task loop (rendering_server_default.cpp:397)  
+        loop until exit  
+            RT->>WTP: yield() - suspend pump task  
+            WTP-->>RT: notify_yield_over() when CommandQueueMT has pending commands  
+            RT->>RT: command_queue.flush_all() - execute all queued render commands  
+        end  
+    and Physics 3D Thread - pump task loop (physics_server_3d_wrap_mt.cpp:50)  
+        loop until exit  
+            P3D->>WTP: yield() - suspend pump task  
+            WTP-->>P3D: notify_yield_over() when command pending  
+            P3D->>P3D: if not doing_sync: command_queue.flush_all()  
+        end  
+    and Physics 2D Thread - pump task loop (physics_server_2d_wrap_mt.cpp:50)  
+        loop until exit  
+            P2D->>WTP: yield() - suspend pump task  
+            WTP-->>P2D: notify_yield_over() when command pending  
+            P2D->>P2D: if not doing_sync: command_queue.flush_all()  
+        end  
+    and Wayland Event Thread - fd-driven loop (wayland_thread.cpp:3025)  
+        loop until thread_done  
+            WayEvt->>WayEvt: wl_display_prepare_read() - claim read slot  
+            WayEvt->>WayEvt: acquire thread_data.mutex  
+            WayEvt->>WayEvt: wl_display_dispatch_pending() - dispatch queued events  
+            WayEvt->>WayEvt: release thread_data.mutex  
+            WayEvt->>WayEvt: wl_display_flush() - flush outgoing requests  
+            WayEvt->>WayEvt: poll(wl_fd -1) - BLOCKS indefinitely waiting for compositor data  
+            WayEvt->>WayEvt: wl_display_read_events() - load new events into queue  
+            WayEvt->>WayEvt: acquire thread_data.mutex  
+            WayEvt->>WayEvt: wl_display_dispatch_pending() - dispatch newly read events  
+            Note over WayEvt: Event callbacks call push_message() to queue messages for Main  
+            WayEvt->>WayEvt: release thread_data.mutex  
+        end  
+    and X11 Event Thread - polling loop (display_server_x11.cpp:4571)  
+        loop until events_thread_done  
+            X11Evt->>X11Evt: _wait_for_events(0 1000) - select() with 1ms timeout on X11 fd  
+            X11Evt->>X11Evt: acquire events_mutex  
+            X11Evt->>X11Evt: _check_pending_events(polled_events) - drain X11 queue into vector  
+            X11Evt->>X11Evt: release events_mutex  
+        end  
+    and Debugger TCP Thread - rate-limited loop (remote_debugger_peer.cpp:203)  
+        loop while running and peer connected  
+            DbgTCP->>DbgTCP: tcp_client->poll() - update TCP state  
+            DbgTCP->>DbgTCP: _write_out() - flush out_queue to socket under mutex  
+            DbgTCP->>DbgTCP: _read_in() - read socket into in_queue under mutex  
+            DbgTCP->>DbgTCP: sleep to maintain ~144Hz rate (min_tick=6900us)  
+        end  
+    and IP DNS Resolver Thread - semaphore-driven loop (ip.cpp:117)  
+        loop until thread_abort  
+            IPRes->>IPRes: sem.wait() - BLOCKS until resolve request posted  
+            IPRes->>IPRes: resolve_queues() - call getaddrinfo() for each pending item  
+            Note over IPRes: Results stored in queue_list under mutex - caller polls status  
+        end  
+    and DBus Portal Monitor Thread - polling loop (freedesktop_portal_desktop.cpp:855)  
+        loop until monitor_thread_abort  
+            DBusMon->>DBusMon: dbus_connection_pop_message() - drain DBus message queue  
+            DBusMon->>DBusMon: handle SettingChanged signals - call_deferred theme change  
+            DBusMon->>DBusMon: handle portal Response signals - push to pending_file_cbs under mutex  
+            DBusMon->>DBusMon: dbus_connection_read_write() - flush DBus connection  
+            DBusMon->>DBusMon: delay_usec(50000) - sleep 50ms  
+        end  
+    and AT-SPI Monitor Thread - polling loop (freedesktop_at_spi_monitor.cpp:52)  
+        loop until exit_thread  
+            AtSPI->>AtSPI: dbus_connection_send_with_reply_and_block() - query IsEnabled (50ms timeout)  
+            AtSPI->>AtSPI: set/clear ac_enabled atomic flag  
+            AtSPI->>AtSPI: dbus_connection_send_with_reply_and_block() - query ScreenReaderEnabled  
+            AtSPI->>AtSPI: set/clear sr_enabled atomic flag  
+            AtSPI->>AtSPI: usleep(50000) - sleep 50ms  
+        end  
+    and ALSA MIDI Thread - polling loop (midi_driver_alsamidi.cpp:69)  
+        loop until exit_thread  
+            MIDI->>MIDI: lock() - acquire MIDI mutex  
+            MIDI->>MIDI: conn.read() for each connected ALSA rawmidi input  
+            MIDI->>MIDI: unlock() - release mutex  
+            MIDI->>MIDI: delay_usec(1000) - sleep 1ms  
+        end  
+    end  
+  
+    Note over Main,NoiseTex: PER FRAME - Main::iteration() - main/main.cpp:4822  
+  
+    rect rgb(173, 216, 230)  
+        Main->>Main: MainFrameTime::advance() - compute physics_steps count for this frame  
+        Main->>Main: XRServer::_process() - main.cpp:4869  
+    end  
+  
+    rect rgb(255, 235, 150)  
+        Note over Main,WayEvt: Wayland only - DisplayServerWayland::process_events()  
+        Main->>Main: acquire wayland_thread.mutex  
+        Main->>Main: wl_display_dispatch_pending() - process any events dispatched by WayEvt  
+        Main->>Main: pop_message() loop - consume all messages pushed by WayEvt callbacks  
+        Main->>Main: release wayland_thread.mutex  
+        Note over WayEvt: WayEvt is blocked on poll() or waiting for mutex during this time  
+    end  
+  
+    rect rgb(220, 200, 255)  
+        Note over Main,X11Evt: X11 only - DisplayServerX11::process_events()  
+        Main->>Main: acquire events_mutex  
+        Main->>Main: swap polled_events - take ownership of X11Evt collected events  
+        Main->>Main: release events_mutex  
+        Main->>Main: process each XEvent - dispatch input/window events  
+        Note over X11Evt: X11Evt continues filling polled_events concurrently  
+    end  
+  
+    rect rgb(200, 230, 200)  
+        Note over Main,DbgTCP: Remote debug only - EngineDebugger::iteration() called from main loop  
+        Main->>Main: acquire debugger mutex  
+        Main->>Main: read from in_queue - process incoming debugger commands  
+        Main->>Main: write to out_queue - queue outgoing profiler/log messages  
+        Main->>Main: release debugger mutex  
+        Note over DbgTCP: DbgTCP flushes out_queue to socket asynchronously  
+    end  
+  
+    loop Physics Steps (0 to max_physics_steps_per_frame - main.cpp:4872)  
+  
+        rect rgb(173, 216, 230)  
+            Main->>Main: Input::flush_buffered_events() - main.cpp:4874  
+            Main->>Main: SceneTree::iteration_prepare() - main.cpp:4885  
+        end  
+  
+        rect rgb(200, 150, 255)  
+            Main->>P3D: PhysicsServer3D::sync() calls push_and_sync(_thread_sync) - main.cpp:4888  
+            Note over Main: Main BLOCKS - waiting for P3D to acknowledge sync  
+            P3D->>P3D: _thread_sync() sets doing_sync flag - physics_server_3d_wrap_mt.cpp:61  
+            P3D-->>Main: sync_cond_var.notify_all() - unblocks Main  
+            Main->>Main: PhysicsServer3D::flush_queries() runs on Main thread - main.cpp:4889  
+        end  
+  
+        rect rgb(255, 182, 193)  
+            Main->>P2D: PhysicsServer2D::sync() calls push_and_sync(_thread_sync) - main.cpp:4893  
+            Note over Main: Main BLOCKS - waiting for P2D to acknowledge sync  
+            P2D->>P2D: _thread_sync() sets doing_sync flag  
+            P2D-->>Main: sync_cond_var.notify_all() - unblocks Main  
+            Main->>Main: PhysicsServer2D::flush_queries() runs on Main thread - main.cpp:4894  
+        end  
+  
+        rect rgb(173, 216, 230)  
+            Main->>Main: SceneTree::physics_process() - user _physics_process() callbacks - main.cpp:4897  
+        end  
+  
+        rect rgb(150, 220, 220)  
+            Main->>Main: NavigationServer3D::physics_process() - main.cpp:4917  
+            Main->>WW: add_group_task() - dispatch RVO avoidance simulation to WTP workers  
+            Note over WW: Workers run avoidance concurrently while Main continues  
+            Main->>Main: MessageQueue::flush() - main.cpp:4923  
+        end  
+  
+        rect rgb(200, 150, 255)  
+            Main->>P3D: PhysicsServer3D::end_sync() clears doing_sync - main.cpp:4927  
+            P3D->>P3D: doing_sync.clear() - physics_server_3d_wrap_mt.cpp:91 - resumes flush_all()  
+            Main->>P3D: PhysicsServer3D::step(delta) via push() ASYNC - main.cpp:4928  
+            Note over P3D: P3D runs GodotPhysicsServer3D::step() asynchronously  
+        end  
+  
+        rect rgb(255, 182, 193)  
+            Main->>P2D: PhysicsServer2D::end_sync() clears doing_sync - main.cpp:4932  
+            P2D->>P2D: doing_sync.clear() - resumes flush_all()  
+            Main->>P2D: PhysicsServer2D::step(delta) via push() ASYNC - main.cpp:4933  
+            Note over P2D: P2D runs GodotPhysicsServer2D::step() asynchronously  
+        end  
+  
+        rect rgb(173, 216, 230)  
+            Main->>Main: MessageQueue::flush() - main.cpp:4936  
+            Main->>Main: SceneTree::iteration_end() - main.cpp:4938  
+        end  
+  
+    end  
+  
+    rect rgb(173, 216, 230)  
+        Main->>Main: SceneTree::process() - user _process() callbacks - main.cpp:4952  
+        Main->>WW: add_group_task() for PROCESS_THREAD_GROUP_SUB_THREAD nodes  
+        WW-->>Main: wait_for_group_task_completion() - Main waits for sub-thread node groups  
+        Main->>Main: MessageQueue::flush() - main.cpp:4955  
+    end  
+  
+    rect rgb(150, 220, 220)  
+        Main->>Main: NavigationServer3D::process() calls sync() - main.cpp:4961  
+        Main->>WW: check is_task_completed() for async navmesh build tasks  
+        WW-->>Main: completed navmesh iterations merged via ping-pong RWLock slot  
+    end  
+  
+    rect rgb(144, 238, 144)  
+        Main->>RT: RenderingServer::sync() calls push_and_sync(_no_op) - main.cpp:4964  
+        Note over Main: Main BLOCKS until RT has processed all prior frame commands  
+        RT->>RT: flush_all() processes all pending commands including _no_op sync marker  
+        RT-->>Main: sync_cond_var.notify_all() - unblocks Main  
+        Main->>RT: RenderingServer::draw(wants_present delta) via push(_draw) ASYNC - main.cpp:4975  
+        Note over RT: RT executes _draw() asynchronously  
+        RT->>RT: RSG::rasterizer->begin_frame()  
+        RT->>RT: RSG::scene->update() + RSG::canvas->update()  
+        RT->>RT: RSG::viewport->draw_viewports() - submit GPU commands  
+        RT->>RT: RSG::rasterizer->end_frame() - swap buffers  
+    end  
+  
+    Note over Main,NoiseTex: ON-DEMAND THREADS (started per-event not at startup)  
+  
+    rect rgb(255, 200, 200)  
+        Note over Main,WinFD: Windows only - DisplayServerWindows::file_dialog_show()  
+        Main->>WinFD: thread.start(_thread_fd_monitor) - one thread per dialog invocation  
+        WinFD->>WinFD: CoInitializeEx(COINIT_APARTMENTTHREADED)  
+        WinFD->>WinFD: CreateWindowExW() - create hidden host window  
+        WinFD->>WinFD: IFileOpenDialog::Show() - BLOCKS on Win32 dialog message loop  
+        WinFD->>WinFD: collect results into FileDialogData  
+        WinFD->>WinFD: fd->finished.set() - signal completion  
+        Main->>Main: wait on fd->finished or poll in process_events()  
+        WinFD-->>Main: dialog results available in FileDialogData  
+    end  
+  
+    rect rgb(200, 255, 200)  
+        Note over Main,CamMon: Linux/camera module - CameraServer::set_monitoring_feeds(true)  
+        Main->>CamMon: camera_thread.start(camera_thread_func) - camera_linux.cpp:~95  
+        loop until exit_flag  
+            CamMon->>CamMon: acquire camera_mutex  
+            CamMon->>CamMon: scandir(/dev) - check for new/removed video devices  
+            CamMon->>CamMon: _add_device() or remove_feed() as needed  
+            CamMon->>CamMon: release camera_mutex  
+            CamMon->>CamMon: call_deferred(emit_signal feeds_updated) - notify Main via deferred call  
+            CamMon->>CamMon: usleep(1000000) - sleep 1 second  
+        end  
+    end  
+  
+    rect rgb(180, 255, 220)  
+        Note over Main,CamFeed: Linux/camera module - CameraFeedLinux::activate_feed()  
+        Main->>CamFeed: update_buffer_thread.start(update_buffer_thread_func) - one thread per camera  
+        loop until exit_flag  
+            CamFeed->>CamFeed: _read_frame() - dequeue V4L2 buffer and upload texture data  
+            CamFeed->>CamFeed: usleep(10000) - sleep 10ms  
+        end  
+    end  
+  
+    rect rgb(255, 220, 180)  
+        Note over Main,AudioRec: AudioEffectRecordInstance::init() - when recording starts  
+        Main->>AudioRec: io_thread.start(_thread_callback) - audio_effect_record.cpp:118  
+        loop while is_recording  
+            AudioRec->>AudioRec: _update_buffer() - drain ring buffer filled by Audio Thread into recording_data  
+            AudioRec->>AudioRec: delay_usec(500) - sleep 500us  
+        end  
+        Note over AudioRec: Audio Thread fills ring buffer under its own lock - AudioRec drains it independently  
+        Main->>AudioRec: is_recording=false - stop recording  
+        AudioRec-->>Main: io_thread.wait_to_finish() - joins record thread  
+    end  
+  
+    rect rgb(200, 240, 255)  
+        Note over Main,HTTP: HTTPRequest::request_raw() when use_threads=true  
+        Main->>HTTP: thread.start(_thread_func) - http_request.cpp:~200 - one thread per active request  
+        HTTP->>HTTP: _request() - open TCP/TLS connection to host  
+        loop until response complete or quit  
+            HTTP->>HTTP: _update_connection() - read/write HTTP data  
+            HTTP->>HTTP: delay_usec(1) - yield briefly  
+        end  
+        HTTP->>HTTP: call_deferred(_defer_done) - post result back to Main via MessageQueue  
+        HTTP-->>Main: _request_done() fires on Main thread via deferred call  
+    end  
+  
+    rect rgb(240, 240, 180)  
+        Note over Main,NoiseTex: NoiseTexture2D/3D::_update_texture() - when noise params change  
+        Main->>NoiseTex: noise_thread.start(_thread_function) - noise_texture_2d.cpp:~155  
+        NoiseTex->>NoiseTex: _generate_texture() - compute noise image data (CPU-intensive)  
+        NoiseTex->>NoiseTex: callable_mp(_thread_done).call_deferred(image) - post result to Main  
+        NoiseTex-->>Main: _thread_done() fires on Main thread - uploads texture to RenderingServer  
+        Note over NoiseTex: If params change again while running regen_queued=true - new thread starts after current finishes  
+    end  
+  
+    rect rgb(255, 210, 170)  
+        Note over Main,IPRes: Any thread - IP::resolve_hostname_queue_item()  
+        Main->>IPRes: sem.post() - wake resolver thread with new hostname in queue_list  
+        IPRes->>IPRes: resolve_queues() - call getaddrinfo() for each pending item  
+        IPRes->>IPRes: store result in queue_list[i].response under mutex  
+        Main->>Main: IP::get_resolve_item_status() - poll result under mutex  
+        Main->>Main: IP::get_resolve_item_address() - read result when STATUS_DONE  
+    end  
+  
+    Note over Main,NoiseTex: SHUTDOWN  
+  
+    rect rgb(173, 216, 230)  
+        Main->>RT: push(_finish) + push(_thread_exit) - rendering_server_default.cpp:275  
+        Main->>WTP: wait_for_task_completion(server_task_id) - joins render pump task  
+        RT-->>Main: render pump task exits  
+        Main->>P3D: push(finish) + push(_thread_exit) - physics_server_3d_wrap_mt.cpp:110  
+        Main->>WTP: wait_for_task_completion(server_task_id) - joins physics 3D pump task  
+        P3D-->>Main: physics 3D pump task exits  
+        Main->>P2D: push(finish) + push(_thread_exit) - physics_server_2d_wrap_mt.cpp:110  
+        Main->>WTP: wait_for_task_completion(server_task_id) - joins physics 2D pump task  
+        P2D-->>Main: physics 2D pump task exits  
+        Main->>AT: exit_thread.set() - signal audio thread to stop  
+        AT->>AT: thread.wait_to_finish() - joins audio thread  
+        Main->>WayEvt: thread_data.thread_done.set() + wl_display_roundtrip() to unblock poll()  
+        WayEvt-->>Main: events_thread.wait_to_finish() - wayland_thread.cpp:4909  
+        Main->>X11Evt: events_thread_done.set() - signal X11 event thread to stop  
+        X11Evt-->>Main: events_thread.wait_to_finish() - display_server_x11.cpp:7425  
+        Main->>DbgTCP: running=false - signal debugger TCP thread to stop  
+        DbgTCP-->>Main: thread.wait_to_finish() - remote_debugger_peer.cpp:80  
+        Main->>IPRes: thread_abort.set() + sem.post() - wake and stop IP resolver  
+        IPRes-->>Main: thread.wait_to_finish()  
+        Main->>DBusMon: monitor_thread_abort.set() - signal DBus monitor to stop  
+        DBusMon-->>Main: monitor_thread.wait_to_finish()  
+        Main->>AtSPI: exit_thread.set() - signal AT-SPI monitor to stop  
+        AtSPI-->>Main: thread.wait_to_finish()  
+        Main->>MIDI: exit_thread.set() - signal ALSA MIDI thread to stop  
+        MIDI-->>Main: thread.wait_to_finish()  
+        Main->>CamMon: exit_flag.set() - signal camera monitor to stop  
+        CamMon-->>Main: camera_thread.wait_to_finish()  
+        Main->>WTP: finish() - joins all worker threads  
+    end  

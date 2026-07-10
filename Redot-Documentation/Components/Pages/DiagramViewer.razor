@@ -1,0 +1,114 @@
+@page "/DiagramViewer"
+@inject HttpClient Http
+@inject IJSRuntime JS
+@inject NavigationManager Navigation
+
+@* Load our custom JS (panzoom loaded dynamically from CDN) *@
+<script src="/js/diagram-viewer.js"></script>
+
+<div class="diagram-container">
+    <div class="diagram-controls">
+        <button @onclick="ResetZoom">Reset Zoom</button>
+        <button @onclick="ZoomIn">Zoom In</button>
+        <button @onclick="ZoomOut">Zoom Out</button>
+        <span>Zoom: @(Math.Round(zoomLevel * 100, 0))%</span>
+    </div>
+
+    <div class="diagram-viewport">
+        <div id="mermaid-diagram" class="mermaid">
+            @diagramContent
+        </div>
+    </div>
+</div>
+
+@code {
+    private string diagramContent = "";
+    private double zoomLevel = 1.0;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            Console.WriteLine("[DiagramViewer] Razor OnAfterRenderAsync called");
+            await JS.InvokeVoidAsync("eval", "console.log('[DiagramViewer] Razor: eval works');");
+
+            // Verify panzoom is loaded
+            await JS.InvokeVoidAsync("eval", @"
+                if (typeof Panzoom !== 'undefined') {
+                    console.log('[DiagramViewer] Panzoom is loaded');
+                } else {
+                    console.error('[DiagramViewer] Panzoom is NOT loaded!');
+                }
+                if (typeof setupDiagramPanZoom === 'function') {
+                    console.log('[DiagramViewer] setupDiagramPanZoom function found');
+                } else {
+                    console.error('[DiagramViewer] setupDiagramPanZoom function NOT found!');
+                }
+            ");
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var uri = Navigation.ToAbsoluteUri("diagrams/boot_logo_diagram.mmd");
+            diagramContent = await Http.GetStringAsync(uri);
+        }
+        catch (Exception ex)
+        {
+            diagramContent = $"Error loading diagram: {ex.Message}";
+        }
+    }
+
+    private async Task ResetZoom()
+    {
+        Console.WriteLine("[DiagramViewer] ResetZoom called from Blazor");
+        await JS.InvokeVoidAsync("eval", @"
+            console.log('[DiagramViewer] ResetZoom button clicked');
+            if (typeof window.__resetPanZoom === 'function') {
+                window.__resetPanZoom();
+                window.__zoomLevel = 1.0;
+                console.log('[DiagramViewer] ResetPanZoom called successfully');
+            } else {
+                console.error('[DiagramViewer] __resetPanZoom function not found!');
+            }
+        ");
+        zoomLevel = 1.0;
+        StateHasChanged();
+    }
+
+    private async Task ZoomIn()
+    {
+        Console.WriteLine("[DiagramViewer] ZoomIn called from Blazor");
+        await JS.InvokeVoidAsync("eval", @"
+            console.log('[DiagramViewer] ZoomIn button clicked');
+            if (typeof window.__zoomPan === 'object' && window.__zoomPan !== null) {
+                window.__zoomPan.zoomIn();
+                window.__zoomLevel = (window.__zoomLevel || 1) * 1.1;
+                console.log('[DiagramViewer] ZoomIn executed, new zoom level:', window.__zoomLevel);
+            } else {
+                console.error('[DiagramViewer] __zoomPan object not found!');
+            }
+        ");
+        zoomLevel = Math.Min(10.0, zoomLevel * 1.1);
+        StateHasChanged();
+    }
+
+    private async Task ZoomOut()
+    {
+        Console.WriteLine("[DiagramViewer] ZoomOut called from Blazor");
+        await JS.InvokeVoidAsync("eval", @"
+            console.log('[DiagramViewer] ZoomOut button clicked');
+            if (typeof window.__zoomPan === 'object' && window.__zoomPan !== null) {
+                window.__zoomPan.zoomOut();
+                window.__zoomLevel = (window.__zoomLevel || 1) * 0.9;
+                console.log('[DiagramViewer] ZoomOut executed, new zoom level:', window.__zoomLevel);
+            } else {
+                console.error('[DiagramViewer] __zoomPan object not found!');
+            }
+        ");
+        zoomLevel = Math.Max(0.1, zoomLevel * 0.9);
+        StateHasChanged();
+    }
+}

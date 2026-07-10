@@ -1,0 +1,193 @@
+sequenceDiagram  
+    participant Main as "Main::setup2() — main/main.cpp"  
+    participant PS as "ProjectSettings"  
+    participant UID as "ResourceUID"  
+    participant IL as "ImageLoader"  
+    participant RS as "RenderingServerDefault"  
+    participant CompRD as "RendererCompositorRD (Forward+/Mobile)"  
+    participant GLES3 as "RasterizerGLES3 (Compatibility)"  
+    participant RD as "RenderingDevice (Vulkan)"  
+    participant OS as "OS — core/os/os.cpp"  
+    participant DSX11 as "DisplayServerX11 — platform/linuxbsd/x11/"  
+    participant DSWayland as "DisplayServerWayland — platform/linuxbsd/wayland/"  
+  
+    Note over Main,DSWayland: COLOR KEY -- amber=Forward+/Vulkan | green=Compatibility/GLES3 | blue=X11 path | purple=Wayland path  
+  
+    Note over Main,DSWayland: DisplayServer (X11 or Wayland) and RenderingServerDefault already constructed<br/>earlier in setup2(). Active compositor = RendererCompositorRD OR RasterizerGLES3<br/>per --rendering-driver flag (vulkan / opengl3).  
+  
+    Main->>Main: setup_boot_logo() [main.cpp:3558]  
+  
+    Main->>PS: GLOBAL_DEF_BASIC("application/boot_splash/show_image") [3859]  
+    PS-->>Main: boot_logo_image: bool  
+    Main->>PS: GLOBAL_DEF_BASIC("application/boot_splash/fullsize") [3860]  
+    PS-->>Main: boot_logo_scale: bool  
+    Main->>PS: GLOBAL_DEF_BASIC("application/boot_splash/use_filter") [3861]  
+    PS-->>Main: boot_logo_filter: bool  
+    Main->>PS: GLOBAL_DEF_BASIC("application/boot_splash/image") [3862]  
+    PS-->>Main: boot_logo_path: String  
+  
+    alt boot_logo_path begins with uid:// [3867]  
+        Main->>UID: text_to_id(boot_logo_path) [3868]  
+        UID-->>Main: logo_id  
+        alt UID has_id(logo_id)  
+            Main->>UID: get_id_path(logo_id) [3870]  
+            UID-->>Main: resolved file path  
+        else UID cache miss  
+            Main->>Main: boot_logo_path = "" — skip custom logo silently [3872]  
+        end  
+    end  
+  
+    alt boot_logo_image == true AND path not empty [3878]  
+        Main->>IL: ImageLoader::load_image(boot_logo_path, boot_logo) [3881]  
+        IL-->>Main: Ref<Image> (custom PNG)  
+    else boot_logo_image == false [3887]  
+        Main->>Main: boot_logo = new 1x1 RGBA8 transparent Image [3889-3891]  
+    else boot_logo_image == true AND path empty  
+        Note over Main: boot_logo remains null — falls through to default splash  
+    end  
+  
+    alt boot_logo.is_valid() [3894]  
+        Main->>PS: GLOBAL_GET("application/boot_splash/bg_color") [via get_boot_splash_bg_color()]  
+        PS-->>Main: boot_bg_color: Color  
+        Main->>RS: set_boot_image(boot_logo, boot_bg_color, boot_logo_scale, boot_logo_filter) [3896]  
+    else boot_logo is null [3899]  
+        Note over Main: Load embedded boot_splash_png [3904]<br/>or boot_splash_editor_png in editor [3902]  
+        Main->>RS: set_default_clear_color(boot_bg_color) [3909]  
+        Main->>RS: set_boot_image(splash, boot_bg_color, scale=false) [3911]  
+    end  
+  
+    RS->>RS: dispatch via RendererCompositor::get_singleton()->set_boot_image()  
+  
+    Note over RS,DSWayland: === MUTUALLY EXCLUSIVE RENDERER PATHS BELOW ===  
+  
+    rect rgb(255, 235, 180)  
+        Note over RS,RD: -- FORWARD+ / MOBILE PATH (rendering_driver = vulkan / d3d12 / metal) --  
+        RS->>CompRD: set_boot_image(image, color, scale, filter) [compositor_rd.cpp:191]  
+  
+        CompRD->>RD: screen_prepare_for_drawing(MAIN_WINDOW_ID) [196]  
+        Note over RD: Acquires next swapchain image.<br/>Returns ERR if window minimized — early return.  
+  
+        rect rgb(173, 216, 230)  
+            Note over DSX11: [X11] VkSurfaceKHR backed by XLib/XCB window  
+            RD-->>DSX11: vkAcquireNextImageKHR  
+            DSX11-->>RD: swapchain image index ready  
+        end  
+  
+        rect rgb(216, 191, 216)  
+            Note over DSWayland: [Wayland] VkSurfaceKHR backed by wl_surface  
+            RD-->>DSWayland: vkAcquireNextImageKHR  
+            DSWayland-->>RD: swapchain image index ready  
+        end  
+  
+        CompRD->>CompRD: texture_storage->texture_allocate() [202]  
+        CompRD->>CompRD: texture_storage->texture_2d_initialize(texture, image) [203]  
+        CompRD->>CompRD: texture_storage->texture_get_rd_texture() [204]  
+        CompRD->>RD: sampler_create(min/mag = LINEAR if filter else NEAREST) [207-210]  
+        RD-->>CompRD: RID sampler  
+        CompRD->>RD: uniform_set_create(SAMPLER_WITH_TEXTURE, binding=0, BLIT_MODE_NORMAL) [221]  
+        RD-->>CompRD: RID uset  
+  
+        rect rgb(173, 216, 230)  
+            Note over DSX11: [X11] reads wd.size [x11.cpp:2653]  
+            CompRD->>DSX11: window_get_size() [224]  
+            DSX11-->>CompRD: Size2 window_size  
+        end  
+  
+        rect rgb(216, 191, 216)  
+            Note over DSWayland: [Wayland] reads wd.rect.size [wayland.cpp:1201]  
+            CompRD->>DSWayland: window_get_size() [224]  
+            DSWayland-->>CompRD: Size2 window_size  
+        end  
+  
+        alt p_scale == true [228]  
+            CompRD->>OS: calculate_boot_screen_rect(window_size, img_size) [229]  
+            Note over OS: os.cpp:238-252 — aspect-fit:<br/>width > height -> fit height, center horiz<br/>else -> fit width, center vert  
+            OS-->>CompRD: Rect2 screenrect (pixel coords, aspect-fit)  
+        else p_scale == false [230-232]  
+            CompRD->>CompRD: screenrect = imgrect | pos += (window_size - img_size) / 2  
+        end  
+  
+        CompRD->>CompRD: screenrect.position /= window_size [235]  
+        CompRD->>CompRD: screenrect.size /= window_size [236]  
+        CompRD->>RD: screen_get_pre_rotation_degrees(MAIN_WINDOW_ID) [244]  
+        RD-->>CompRD: rotation_degrees — compute cos/sin for push constant [245-247]  
+        CompRD->>RD: draw_list_begin_for_screen(MAIN_WINDOW_ID, p_color) [238]  
+        RD-->>CompRD: DrawListID draw_list  
+        CompRD->>RD: draw_list_bind_render_pipeline(BLIT_MODE_NORMAL_ALPHA) [240]  
+        CompRD->>RD: draw_list_bind_index_array(blit.array) [241]  
+        CompRD->>RD: draw_list_bind_uniform_set(uset, slot=0) [242]  
+        CompRD->>RD: draw_list_set_push_constant(BlitPushConstant{rotation_cos, rotation_sin, src_rect=[0,0,1,1], dst_rect=screenrect_normalized}) [266]  
+        CompRD->>RD: draw_list_draw(use_indices=true) [267]  
+        CompRD->>RD: draw_list_end() [269]  
+        CompRD->>RD: swap_buffers(true) [271]  
+  
+        rect rgb(173, 216, 230)  
+            Note over DSX11: [X11] Boot logo frame presented  
+            RD-->>DSX11: vkQueuePresentKHR on XLib/XCB VkSurfaceKHR  
+        end  
+  
+        rect rgb(216, 191, 216)  
+            Note over DSWayland: [Wayland] Boot logo frame presented  
+            RD-->>DSWayland: vkQueuePresentKHR on wl_surface VkSurfaceKHR  
+        end  
+  
+        CompRD->>CompRD: texture_storage->texture_free(texture) [273]  
+        CompRD->>RD: free(sampler) [274]  
+    end  
+  
+    rect rgb(200, 240, 200)  
+        Note over RS,GLES3: -- COMPATIBILITY PATH (rendering_driver = opengl3 / opengl3_angle) --  
+        RS->>GLES3: set_boot_image(image, color, scale, filter) [rasterizer_gles3.cpp:473]  
+  
+        rect rgb(173, 216, 230)  
+            Note over DSX11: [X11] EGL context on EGL_PLATFORM_X11 (GLX or EGL backed by X11 Window)  
+            GLES3->>DSX11: window_get_size() [478]  
+            DSX11-->>GLES3: Size2i win_size — reads wd.size [x11.cpp:2653]  
+        end  
+  
+        rect rgb(216, 191, 216)  
+            Note over DSWayland: [Wayland] EGL context on EGL_PLATFORM_WAYLAND (wl_egl_window wrapping wl_surface)  
+            GLES3->>DSWayland: window_get_size() [478]  
+            DSWayland-->>GLES3: Size2i win_size — reads wd.rect.size [wayland.cpp:1201]  
+        end  
+  
+        GLES3->>GLES3: glBindFramebuffer(GL_FRAMEBUFFER, system_fbo) [480]  
+        GLES3->>GLES3: glViewport(0, 0, win_size.width, win_size.height) [481]  
+        GLES3->>GLES3: glEnable(GL_BLEND) + glBlendFuncSeparate(SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ONE, ONE) [482-483]  
+        GLES3->>GLES3: glDepthMask(GL_FALSE) [484]  
+        GLES3->>GLES3: glClearColor(p_color.r, p_color.g, p_color.b, alpha) [485]  
+        GLES3->>GLES3: glClear(GL_COLOR_BUFFER_BIT) [486]  
+        GLES3->>GLES3: texture_storage->texture_allocate() [488]  
+        GLES3->>GLES3: texture_storage->texture_2d_initialize(texture, image) [489]  
+  
+        alt p_scale == true [493]  
+            Note over GLES3: Inline aspect-fit — does NOT call OS::calculate_boot_screen_rect:<br/>width > height -> fit height, center horiz [494-498]<br/>else -> fit width, center vert [500-504]  
+        else p_scale == false [506-508]  
+            GLES3->>GLES3: screenrect = imgrect | pos += (win_size - img_size) / 2  
+        end  
+  
+        GLES3->>GLES3: Flip Y: pos.y = win_size.y - pos.y | size.y = -size.y [515-517]  
+        GLES3->>GLES3: Normalize: pos /= win_size | size /= win_size [521-522]  
+        GLES3->>GLES3: t->gl_set_filter(LINEAR or NEAREST based on p_use_filter) [525]  
+        GLES3->>GLES3: glActiveTexture(GL_TEXTURE0) + glBindTexture(GL_TEXTURE_2D, t->tex_id) [526-527]  
+        GLES3->>GLES3: copy_effects->copy_to_rect(screenrect) [528]  
+        GLES3->>GLES3: glBindTexture(GL_TEXTURE_2D, 0) [529]  
+        GLES3->>GLES3: gl_end_frame(true) [531]  
+  
+        rect rgb(173, 216, 230)  
+            Note over DSX11: [X11] Boot logo presented  
+            GLES3->>DSX11: DisplayServer::swap_buffers() [gl_end_frame:130]  
+            Note over DSX11: eglSwapBuffers on X11 EGL surface  
+        end  
+  
+        rect rgb(216, 191, 216)  
+            Note over DSWayland: [Wayland] Boot logo presented  
+            GLES3->>DSWayland: DisplayServer::swap_buffers() [gl_end_frame:130]  
+            Note over DSWayland: eglSwapBuffers on wl_egl_window  
+        end  
+  
+        GLES3->>GLES3: texture_storage->texture_free(texture) [533]  
+    end  
+  
+    Main->>Main: DisplayServer::set_early_window_clear_color_override(false) [main.cpp:3564]  
+    Note over Main: Early solid-color window clear disabled. Boot logo is on screen. setup2() continues.  

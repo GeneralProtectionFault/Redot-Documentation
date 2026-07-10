@@ -16,6 +16,8 @@ public class Program
             .AddInteractiveWebAssemblyComponents();
         builder.Services.AddScoped<DocRendererService>();
         builder.Services.AddSingleton<VersionManagerService>();
+        builder.Services.AddHttpClient();
+
 
         var app = builder.Build();
 
